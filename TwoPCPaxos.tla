@@ -30,8 +30,8 @@ Messages ==
     (* The set of all possible messages                                    *)
     (***********************************************************************)
     [type : {"commit", "abort"}] \cup [type : {"prepared", "aborted", "ack"}, src : 1..numShards] \cup
-    [type : {"phase1a"}, src : DS, desc : {"leaderPrepared", "leaderAborted", "committed", "aborted"}] \cup
-    [type : {"phase1b"}, src : DS, dst : DS, desc : {"leaderDecision", "coordDecision"}]
+    [type : {"phase2a"}, src : DS, desc : {"leaderPrepared", "leaderAborted", "committed", "aborted"}] \cup
+    [type : {"phase2b"}, src : DS, dst : DS, desc : {"leaderDecision", "coordDecision"}]
 
 -----------------------------------------------------------------------------
 VARIABLES
@@ -40,6 +40,8 @@ VARIABLES
     coordPrepared,              \* The set of shards that are prepared
     coordDecisionReplicated,    \* The set of replicas to which the coordinator has replicated its decision
     msgs                        \* The message pool
+    
+vars == << dsState, coordState, coordPrepared, coordDecisionReplicated, msgs >>
 
 TypeOK ==
     /\ dsState \in [DS -> [Shard : 1..numShards,
@@ -102,17 +104,17 @@ CoordAbort ==
     /\ dsState' = [dsState EXCEPT ![Coordinator].State = "aborted"]
     /\ UNCHANGED <<coordPrepared, coordDecisionReplicated, msgs>>
 
-CoordSendPhase1a ==
+CoordSendPhase2a ==
     /\ \/ coordState = "commit"
        \/ coordState = "abort"
-    /\ send([type |-> "phase1a", src |-> Coordinator,
+    /\ send([type |-> "phase2a", src |-> Coordinator,
              desc |-> IF coordState = "commit" THEN "committed" ELSE "aborted"])
     /\ coordDecisionReplicated' = coordDecisionReplicated \cup {Coordinator}
     /\ UNCHANGED <<dsState, coordState, coordPrepared>>
 
-CoordRcvPhase1b(ds) ==
+CoordRcvPhase2b(ds) ==
     /\ ds \in Shards[dsState[Coordinator].Shard]   \* ds is in the same shard as the coordinator
-    /\ [type |-> "phase1b", src |-> ds, dst |-> Coordinator, desc |-> "coordDecision"] \in msgs
+    /\ [type |-> "phase2b", src |-> ds, dst |-> Coordinator, desc |-> "coordDecision"] \in msgs
     /\ coordDecisionReplicated' = coordDecisionReplicated \cup {ds}
     /\ UNCHANGED <<dsState, coordState, coordPrepared, msgs>>
 
@@ -139,20 +141,20 @@ LeaderAbort(ds) ==
     /\ dsState' = [dsState EXCEPT ![ds].State = "aborted"]
     /\ UNCHANGED <<coordState, coordPrepared, coordDecisionReplicated, msgs>>
 
-LeaderSendPhase1aLeaderDecision(ds) ==
+LeaderSendPhase2aLeaderDecision(ds) ==
     /\ dsState[ds].Role = "Leader"
     /\ \/ dsState[ds].State = "prepared"
        \/ dsState[ds].State = "aborted"
-    /\ send([type |-> "phase1a", src |-> ds,
+    /\ send([type |-> "phase2a", src |-> ds,
              desc |-> IF dsState[ds].State = "prepared" THEN "leaderPrepared" ELSE "leaderAborted"])
     /\ dsState' = [dsState EXCEPT 
                    ![ds].LeaderDecisionReplicated = dsState[ds].LeaderDecisionReplicated \cup {ds}]
     /\ UNCHANGED <<coordState, coordPrepared, coordDecisionReplicated>>
 
-LeaderRcvPhase1bLeaderDecision(src, dst) ==
+LeaderRcvPhase2bLeaderDecision(src, dst) ==
     /\ dsState[dst].Role = "Leader"
     /\ dsState[src].Shard = dsState[dst].Shard      \* Source and destination reside in the same shard
-    /\ [type |-> "phase1b", src |-> src, dst |-> dst, desc |-> "leaderDecision"] \in msgs
+    /\ [type |-> "phase2b", src |-> src, dst |-> dst, desc |-> "leaderDecision"] \in msgs
     /\ dsState' = [dsState EXCEPT
                    ![dst].LeaderDecisionReplicated = dsState[dst].LeaderDecisionReplicated \cup {src}]
     /\ UNCHANGED <<coordState, coordPrepared, coordDecisionReplicated, msgs>>
@@ -166,21 +168,21 @@ LeaderSendDecision(ds) ==
              src |-> dsState[ds].Shard])
     /\ UNCHANGED <<dsState, coordState, coordPrepared, coordDecisionReplicated>>
 
-LeaderSendPhase1aCoordDecision(ds) ==
+LeaderSendPhase2aCoordDecision(ds) ==
     /\ dsState[ds].Role = "Leader"
     /\ \/ [type |-> "commit"] \in msgs
        \/ [type |-> "abort"] \in msgs   \* Decision from the coordinator
-    /\ send([type |-> "phase1a",
+    /\ send([type |-> "phase2a",
              src |-> ds, desc |-> IF [type |-> "commit"] \in msgs THEN "committed" ELSE "aborted"])
     /\ dsState' = [dsState EXCEPT 
                    ![ds].State = IF [type |-> "commit"] \in msgs THEN "committed" ELSE "aborted",
                    ![ds].CoordDecisionReplicated = dsState[ds].CoordDecisionReplicated \cup {ds}]
     /\ UNCHANGED <<coordState, coordPrepared, coordDecisionReplicated>>
 
-LeaderRcvPhase1bCoordDecision(src, dst) ==
+LeaderRcvPhase2bCoordDecision(src, dst) ==
     /\ dsState[dst].Role = "Leader"
     /\ dsState[src].Shard = dsState[dst].Shard      \* Source and destination reside in the same shard
-    /\ [type |-> "phase1b", src |-> src, dst |-> dst, desc |-> "coordDecision"] \in msgs
+    /\ [type |-> "phase2b", src |-> src, dst |-> dst, desc |-> "coordDecision"] \in msgs
     /\ dsState' = [dsState EXCEPT
                    ![dst].CoordDecisionReplicated = dsState[dst].CoordDecisionReplicated \cup {src}]
     /\ UNCHANGED <<coordState, coordPrepared, coordDecisionReplicated, msgs>>
@@ -195,24 +197,24 @@ LeaderAck(ds) ==
 (***************************************************************************)
 (*                             FOLLOWER ACTIONS                            *)
 (***************************************************************************)
-FollowerSendPhase1bLeaderDecision(ds) ==
+FollowerSendPhase2bLeaderDecision(ds) ==
     /\ dsState[ds].Role = "Follower"
-    /\ \/ [type |-> "phase1a", src |-> Leaders[dsState[ds].Shard], desc |-> "leaderPrepared"] \in msgs
-       \/ [type |-> "phase1a", src |-> Leaders[dsState[ds].Shard], desc |-> "leaderAborted"] \in msgs
+    /\ \/ [type |-> "phase2a", src |-> Leaders[dsState[ds].Shard], desc |-> "leaderPrepared"] \in msgs
+       \/ [type |-> "phase2a", src |-> Leaders[dsState[ds].Shard], desc |-> "leaderAborted"] \in msgs
     /\ dsState' = [dsState EXCEPT ![ds].State = 
-                   IF [type |-> "phase1a", src |-> Leaders[dsState[ds].Shard], desc |-> "leaderPrepared"] \in msgs
+                   IF [type |-> "phase2a", src |-> Leaders[dsState[ds].Shard], desc |-> "leaderPrepared"] \in msgs
                    THEN "prepared" ELSE "aborted"]
-    /\ send([type |-> "phase1b", src |-> ds, dst |-> Leaders[dsState[ds].Shard], desc |-> "leaderDecision"])
+    /\ send([type |-> "phase2b", src |-> ds, dst |-> Leaders[dsState[ds].Shard], desc |-> "leaderDecision"])
     /\ UNCHANGED <<coordState, coordPrepared, coordDecisionReplicated>>
 
-FollowerSendPhase1bCoordDecision(ds) ==
+FollowerSendPhase2bCoordDecision(ds) ==
     /\ dsState[ds].Role = "Follower"
-    /\ \/ [type |-> "phase1a", src |-> Leaders[dsState[ds].Shard], desc |-> "committed"] \in msgs
-       \/ [type |-> "phase1a", src |-> Leaders[dsState[ds].Shard], desc |-> "aborted"] \in msgs
+    /\ \/ [type |-> "phase2a", src |-> Leaders[dsState[ds].Shard], desc |-> "committed"] \in msgs
+       \/ [type |-> "phase2a", src |-> Leaders[dsState[ds].Shard], desc |-> "aborted"] \in msgs
     /\ dsState' = [dsState EXCEPT ![ds].State =
-                   IF [type |-> "phase1a", src |-> Leaders[dsState[ds].Shard], desc |-> "committed"] \in msgs
+                   IF [type |-> "phase2a", src |-> Leaders[dsState[ds].Shard], desc |-> "committed"] \in msgs
                    THEN "committed" ELSE "aborted"]
-    /\ send([type |-> "phase1b", src |-> ds, dst |-> Leaders[dsState[ds].Shard], desc |-> "coordDecision"])
+    /\ send([type |-> "phase2b", src |-> ds, dst |-> Leaders[dsState[ds].Shard], desc |-> "coordDecision"])
     /\ UNCHANGED <<coordState, coordPrepared, coordDecisionReplicated>>
 
 -----------------------------------------------------------------------------
@@ -222,36 +224,57 @@ FollowerSendPhase1bCoordDecision(ds) ==
 Next ==
     \/ CoordCommit
     \/ CoordAbort
-    \/ CoordSendPhase1a
+    \/ CoordSendPhase2a
     \/ CoordBroadcastDecision
-    \/ \E ds \in DS : \/ CoordRcvPhase1b(ds)
+    \/ \E ds \in DS : \/ CoordRcvPhase2b(ds)
                       \/ LeaderPrepare(ds)
                       \/ LeaderAbort(ds)
-                      \/ LeaderSendPhase1aLeaderDecision(ds)
+                      \/ LeaderSendPhase2aLeaderDecision(ds)
                       \/ LeaderSendDecision(ds)
-                      \/ LeaderSendPhase1aCoordDecision(ds)
+                      \/ LeaderSendPhase2aCoordDecision(ds)
                       \/ LeaderAck(ds)
-                      \/ FollowerSendPhase1bLeaderDecision(ds)
-                      \/ FollowerSendPhase1bCoordDecision(ds)
-    \/ \E src, dst \in DS : \/ LeaderRcvPhase1bLeaderDecision(src, dst)
-                            \/ LeaderRcvPhase1bCoordDecision(src, dst)
+                      \/ FollowerSendPhase2bLeaderDecision(ds)
+                      \/ FollowerSendPhase2bCoordDecision(ds)
+    \/ \E src, dst \in DS : \/ LeaderRcvPhase2bLeaderDecision(src, dst)
+                            \/ LeaderRcvPhase2bCoordDecision(src, dst)
     \/ \E s \in {i : i \in 1..numShards} : \/ CoordRcvLeaderPrepare(s)
                                            \/ CoordRcvLeaderAbort(s)
 
 -----------------------------------------------------------------------------
 (***************************************************************************)
-(*                           CONSISTENT CONSTRAINT                         *)
+(*                               CONSTRAINTS                               *)
 (***************************************************************************)
-Consistent ==
+AllCommit == \A ds \in DS : dsState[ds].State = "committed"
+
+AllAbort == \A ds \in DS : dsState[ds].State = "aborted"
+    
+Liveness == <>(AllCommit \/ AllAbort)
+
+Safety ==
     \A ds1, ds2 \in DS : ~ /\ dsState[ds1].State = "aborted"
                            /\ dsState[ds2].State = "committed"
-                           
-AllCommit ==
-    ~ \A ds \in DS : dsState[ds].State = "committed"
 
+Spec == Init /\ [][Next]_vars
+
+FairSpec == /\ Spec
+            /\ WF_vars(CoordCommit)
+            /\ WF_vars(CoordSendPhase2a)
+            /\ WF_vars(CoordBroadcastDecision)
+            /\ \A ds \in DS : /\ WF_vars(CoordRcvPhase2b(ds))
+                              /\ WF_vars(LeaderPrepare(ds))
+                              /\ WF_vars(LeaderSendPhase2aLeaderDecision(ds))
+                              /\ WF_vars(LeaderSendDecision(ds))
+                              /\ WF_vars(LeaderSendPhase2aCoordDecision(ds))
+                              /\ WF_vars(LeaderAck(ds))
+                              /\ WF_vars(FollowerSendPhase2bLeaderDecision(ds))
+                              /\ WF_vars(FollowerSendPhase2bCoordDecision(ds))
+            /\ \A src, dst \in DS : /\ WF_vars(LeaderRcvPhase2bLeaderDecision(src, dst))
+                                    /\ WF_vars(LeaderRcvPhase2bCoordDecision(src, dst))
+            /\ \A s \in {i : i \in 1..numShards} : /\ WF_vars(CoordRcvLeaderPrepare(s))
+                                                   /\ WF_vars(CoordRcvLeaderAbort(s))
 =============================================================================
 \* Modification History
-\* Last modified Wed May 17 16:12:51 HKT 2023 by cuifan
+\* Last modified Thu May 25 10:34:55 HKT 2023 by fcui22
+\* Last modified Wed May 24 18:07:16 HKT 2023 by fcui22
 \* Last modified Wed May 17 14:47:51 HKT 2023 by cuifan
-\* Last modified Wed May 17 12:02:36 HKT 2023 by fcui22
 \* Created Tue May 16 15:55:05 HKT 2023 by fcui22
