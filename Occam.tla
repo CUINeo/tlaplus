@@ -88,7 +88,8 @@ CoordRcvLeaderAbort(s) ==
     /\ [type |-> "aborted", src |-> s] \in msgs
     /\ coordState' = "abort"
     /\ dsState' = [dsState EXCEPT ![Coordinator].State = "aborted"]
-    /\ UNCHANGED <<coordPrepared, coordDecisionReplicated, msgs>>
+    /\ send([type |-> "abort"])
+    /\ UNCHANGED <<coordPrepared, coordDecisionReplicated>>
 
 CoordCommit ==
     /\ coordState = "init"
@@ -103,7 +104,8 @@ CoordCommit ==
           \* can proceed to commit the transaction.
     /\ coordState' = "commit"
     /\ dsState' = [dsState EXCEPT ![Coordinator].State = "committed"]
-    /\ UNCHANGED <<coordPrepared, coordDecisionReplicated, msgs>>
+    /\ send([type |-> "commit"])
+    /\ UNCHANGED <<coordPrepared, coordDecisionReplicated>>
 
 CoordSendPhase2a ==
     /\ \/ coordState = "commit"
@@ -205,6 +207,7 @@ LeaderAck(ds) ==
 (***************************************************************************)
 FollowerSendPhase2bLeaderDecision(ds) ==
     /\ dsState[ds].Role = "Follower"
+    /\ dsState[ds].State = "working"
     /\ \/ [type |-> "phase2a", src |-> Leaders[dsState[ds].Shard], desc |-> "leaderPrepared"] \in msgs
        \/ [type |-> "phase2a", src |-> Leaders[dsState[ds].Shard], desc |-> "leaderAborted"] \in msgs
     /\ dsState' = [dsState EXCEPT ![ds].State = 
@@ -220,6 +223,8 @@ FollowerSendPhase2bLeaderDecision(ds) ==
 
 FollowerSendPhase2bCoordDecision(ds) ==
     /\ dsState[ds].Role = "Follower"
+    /\ \/ dsState[ds].State = "working"
+       \/ dsState[ds].State = "prepared"
     /\ \/ [type |-> "phase2a", src |-> Leaders[dsState[ds].Shard], desc |-> "committed"] \in msgs
        \/ [type |-> "phase2a", src |-> Leaders[dsState[ds].Shard], desc |-> "aborted"] \in msgs
     /\ dsState' = [dsState EXCEPT ![ds].State =
@@ -282,5 +287,5 @@ FairSpec == /\ Spec
                                                    /\ WF_vars(CoordRcvLeaderAbort(s))
 =============================================================================
 \* Modification History
-\* Last modified Tue Jul 04 11:18:17 HKT 2023 by fcui22
+\* Last modified Tue Jul 04 15:02:38 HKT 2023 by fcui22
 \* Created Thu May 25 11:29:16 HKT 2023 by fcui22
