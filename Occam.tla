@@ -29,10 +29,12 @@ Messages ==
     (***********************************************************************)
     (* The set of all possible messages                                    *)
     (***********************************************************************)
-    [type : {"prepared", "aborted", "ack"}, src : 1..numShards] \cup
-    [type : {"prepareAccepted"}, src : DS] \cup [type : {"commit", "abort"}] \cup
+    [type : {"phase2a"}, src : DS, desc : {"leaderPrepared", "leaderAborted", "committed", "aborted"}] \cup
     [type : {"phase2b"}, src : DS, dst : DS, desc : {"leaderDecision", "coordDecision"}] \cup
-    [type : {"phase2a"}, src : DS, desc : {"leaderPrepared", "leaderAborted", "committed", "aborted"}]
+    [type : {"prepareAccepted"}, src : 1..numShards] \cup
+    [type : {"prepared", "aborted", "ack"}, src : 1..numShards] \cup
+    [type : {"commit", "abort"}]
+
 -----------------------------------------------------------------------------
 VARIABLES
     dsState,                    \* dsState[ds] is the state of data server ds
@@ -48,8 +50,6 @@ TypeOK ==
                            Role : {"Coordinator", "Leader", "Follower"},
                            LeaderDecisionReplicated : SUBSET DS,
                            CoordDecisionReplicated : SUBSET DS,
-                           Accepted : SUBSET DS,
-                                    \* The set of followers that have accepted leaders' prepare decision
                            State : {"working", "prepared", "committed", "aborted"}]]
     /\ coordState \in {"init", "commit", "abort"}
     /\ coordPrepared \subseteq {i : i \in 1..numShards}
@@ -63,7 +63,6 @@ Init ==
                            [] OTHER                                    -> "Follower",
                   LeaderDecisionReplicated |-> {},
                   CoordDecisionReplicated |-> {},
-                  Accepted |-> {},
                   State |-> "working"]]
     /\ coordState              = "init"
     /\ coordPrepared           = {}
@@ -91,30 +90,19 @@ CoordRcvLeaderAbort(s) ==
     /\ dsState' = [dsState EXCEPT ![Coordinator].State = "aborted"]
     /\ UNCHANGED <<coordPrepared, coordDecisionReplicated, msgs>>
 
-CoordRcvFollowerAccept(ds) ==
-    /\ coordState = "init"
-    /\ [type |-> "prepareAccepted", src |-> ds] \in msgs
-    /\ dsState' = [dsState EXCEPT
-                   ![Coordinator].Accepted = dsState[Coordinator].Accepted \cup {ds}]
-    /\ UNCHANGED <<coordState, coordPrepared, coordDecisionReplicated, msgs>>
-
 CoordCommit ==
     /\ coordState = "init"
     /\ \/ coordPrepared = {i : i \in 1..numShards} \ {dsState[Coordinator].Shard}
           \* All shards excluding the one coordinator resides in are prepared
-       \/ \A s \in {i : i \in 1..numShards} :
-          Cardinality({ds \in dsState[Coordinator].Accepted : dsState[ds].Shard = s})
-          \geq Cardinality(Shards[s]) \div 2
-          \* prepareAccepted message from a follower indicates the leader is prepared as well
-          \* According to shortcut messages, all shards are prepared with fault-tolerance
+       \/ \A s \in {i : i \in 1..numShards} \ {dsState[Coordinator].Shard} :
+            [type |-> "prepareAccepted", src |-> s] \in msgs
+          \* prepareAccepted message from shard s indicates that the leader and at least
+          \* one follower of s has prepared. In 3-way replicated case, this indeed means
+          \* that the prepare decision of the shard is fault-tolerant now.
+          \* If all shards excluding the one coordinator resides are prepared, coordinator
+          \* can proceed to commit the transaction.
     /\ coordState' = "commit"
     /\ dsState' = [dsState EXCEPT ![Coordinator].State = "committed"]
-    /\ UNCHANGED <<coordPrepared, coordDecisionReplicated, msgs>>
-
-CoordAbort ==
-    /\ coordState = "init"
-    /\ coordState' = "abort"
-    /\ dsState' = [dsState EXCEPT ![Coordinator].State = "aborted"]
     /\ UNCHANGED <<coordPrepared, coordDecisionReplicated, msgs>>
 
 CoordSendPhase2a ==
@@ -171,12 +159,6 @@ LeaderRcvPhase2bLeaderDecision(src, dst) ==
                    ![dst].LeaderDecisionReplicated = dsState[dst].LeaderDecisionReplicated \cup {src}]
     /\ UNCHANGED <<coordState, coordPrepared, coordDecisionReplicated, msgs>>
 
-LeaderRcvFollowerAccept(src, dst) ==
-    /\ dsState[dst].Role = "Leader"
-    /\ [type |-> "prepareAccepted", src |-> src] \in msgs
-    /\ dsState' = [dsState EXCEPT ![dst].Accepted = dsState[dst].Accepted \cup {src}]
-    /\ UNCHANGED <<coordState, coordPrepared, coordDecisionReplicated, msgs>>
-
 LeaderSendDecision(ds) ==
     /\ dsState[ds].Role = "Leader"
     /\ \/ dsState[ds].State = "prepared"
@@ -190,10 +172,13 @@ LeaderSendPhase2aCoordDecision(ds) ==
     /\ dsState[ds].Role = "Leader"
     /\ \/ [type |-> "commit"] \in msgs
        \/ [type |-> "abort"] \in msgs   \* Decision from the coordinator
-       \/ \A s \in {i : i \in 1..numShards} :
-          Cardinality({x \in dsState[ds].Accepted : dsState[x].Shard = s}) \geq Cardinality(Shards[s]) \div 2
-          \* prepareAccepted message from a follower indicates the leader is prepared as well
-          \* According to shortcut messages, all shards are prepared with fault-tolerance
+       \/ \A s \in {i : i \in 1..numShards} \ {dsState[Coordinator].Shard} :
+            [type |-> "prepareAccepted", src |-> s] \in msgs
+          \* prepareAccepted message from shard s indicates that the leader and at least
+          \* one follower of s has prepared. In 3-way replicated case, this indeed means
+          \* that the prepare decision of the shard is fault-tolerant now.
+          \* If all shards excluding the one coordinator resides are prepared, coordinator
+          \* can proceed to commit the transaction.
     /\ send([type |-> "phase2a",
              src |-> ds, desc |-> IF [type |-> "abort"] \in msgs THEN "aborted" ELSE "committed"])
     /\ dsState' = [dsState EXCEPT 
@@ -225,8 +210,12 @@ FollowerSendPhase2bLeaderDecision(ds) ==
     /\ dsState' = [dsState EXCEPT ![ds].State = 
                    IF [type |-> "phase2a", src |-> Leaders[dsState[ds].Shard], desc |-> "leaderPrepared"] \in msgs
                    THEN "prepared" ELSE "aborted"]
-    /\ msgs' = msgs \cup {[type |-> "prepareAccepted", src |-> ds],     \* Occam's shortcut messages
-                [type |-> "phase2b", src |-> ds, dst |-> Leaders[dsState[ds].Shard], desc |-> "leaderDecision"]}
+    /\ msgs' = IF [type |-> "phase2a", src |-> Leaders[dsState[ds].Shard], desc |-> "leaderAborted"] \in msgs
+               THEN msgs \cup
+                    {[type |-> "phase2b", src |-> ds, dst |-> Leaders[dsState[ds].Shard], desc |-> "leaderDecision"]}
+               ELSE msgs \cup
+                    {[type |-> "prepareAccepted", src |-> dsState[ds].Shard],  \* Occam's shortcut messages
+                     [type |-> "phase2b", src |-> ds, dst |-> Leaders[dsState[ds].Shard], desc |-> "leaderDecision"]}
     /\ UNCHANGED <<coordState, coordPrepared, coordDecisionReplicated>>
 
 FollowerSendPhase2bCoordDecision(ds) ==
@@ -244,11 +233,9 @@ FollowerSendPhase2bCoordDecision(ds) ==
 (***************************************************************************)
 Next ==
     \/ CoordCommit
-    \/ CoordAbort
     \/ CoordSendPhase2a
     \/ CoordBroadcastDecision
-    \/ \E ds \in DS : \/ CoordRcvFollowerAccept(ds)
-                      \/ CoordRcvPhase2b(ds)
+    \/ \E ds \in DS : \/ CoordRcvPhase2b(ds)
                       \/ LeaderPrepare(ds)
                       \/ LeaderAbort(ds)
                       \/ LeaderSendPhase2aLeaderDecision(ds)
@@ -258,7 +245,6 @@ Next ==
                       \/ FollowerSendPhase2bLeaderDecision(ds)
                       \/ FollowerSendPhase2bCoordDecision(ds)
     \/ \E src, dst \in DS : \/ LeaderRcvPhase2bLeaderDecision(src, dst)
-                            \/ LeaderRcvFollowerAccept(src, dst)
                             \/ LeaderRcvPhase2bCoordDecision(src, dst)
     \/ \E s \in {i : i \in 1..numShards} : \/ CoordRcvLeaderPrepare(s)
                                            \/ CoordRcvLeaderAbort(s)
@@ -282,8 +268,7 @@ FairSpec == /\ Spec
             /\ WF_vars(CoordCommit)
             /\ WF_vars(CoordSendPhase2a)
             /\ WF_vars(CoordBroadcastDecision)
-            /\ \A ds \in DS : /\ WF_vars(CoordRcvFollowerAccept(ds))
-                              /\ WF_vars(CoordRcvPhase2b(ds))
+            /\ \A ds \in DS : /\ WF_vars(CoordRcvPhase2b(ds))
                               /\ WF_vars(LeaderPrepare(ds))
                               /\ WF_vars(LeaderSendPhase2aLeaderDecision(ds))
                               /\ WF_vars(LeaderSendDecision(ds))
@@ -292,11 +277,10 @@ FairSpec == /\ Spec
                               /\ WF_vars(FollowerSendPhase2bLeaderDecision(ds))
                               /\ WF_vars(FollowerSendPhase2bCoordDecision(ds))
             /\ \A src, dst \in DS : /\ WF_vars(LeaderRcvPhase2bLeaderDecision(src, dst))
-                                    /\ WF_vars(LeaderRcvFollowerAccept(src, dst))
                                     /\ WF_vars(LeaderRcvPhase2bCoordDecision(src, dst))
             /\ \A s \in {i : i \in 1..numShards} : /\ WF_vars(CoordRcvLeaderPrepare(s))
                                                    /\ WF_vars(CoordRcvLeaderAbort(s))
 =============================================================================
 \* Modification History
-\* Last modified Thu May 25 11:30:41 HKT 2023 by fcui22
+\* Last modified Tue Jul 04 11:18:17 HKT 2023 by fcui22
 \* Created Thu May 25 11:29:16 HKT 2023 by fcui22
