@@ -272,9 +272,3 @@ FairSpec == /\ Spec
                                     /\ WF_vars(LeaderRcvPhase2bCoordDecision(src, dst))
             /\ \A s \in {i : i \in 1..numShards} : /\ WF_vars(CoordRcvLeaderPrepare(s))
                                                    /\ WF_vars(CoordRcvLeaderAbort(s))
-=============================================================================
-\* Modification History
-\* Last modified Thu May 25 10:34:55 HKT 2023 by fcui22
-\* Last modified Wed May 24 18:07:16 HKT 2023 by fcui22
-\* Last modified Wed May 17 14:47:51 HKT 2023 by cuifan
-\* Created Tue May 16 15:55:05 HKT 2023 by fcui22
